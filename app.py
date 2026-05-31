@@ -211,17 +211,22 @@ def get_covered_slots(shift_name):
 # ==========================================
 # 📂 4. セッション状態の初期化
 # ==========================================
+DEFAULT_STAFF_LIST = [
+    {"名前": "山田 花子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
+    {"名前": "鈴木 一郎", "雇用形態": "パート", "月上限日数": 12, "希望時間帯": "8:30-13:00 9:00-13:30 7:00-11:00", "時短希望": "あり", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 10, "type": "有休"}]'},
+    {"名前": "佐藤 美咲", "雇用形態": "パート", "月上限日数": 15, "希望時間帯": "15:00-19:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 15, "type": "希休"}, {"day": 16, "type": "希休"}]'},
+    {"名前": "田中 恵子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
+    {"名前": "小林 翔太", "雇用形態": "正社員", "月上限日数": 22, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
+    {"名前": "高橋 陽子", "雇用形態": "パート", "月上限日数": 16, "希望時間帯": "9:00-17:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
+    {"名前": "渡辺 理恵", "雇用形態": "パート", "月上限日数": 10, "希望時間帯": "7:00-12:00 8:00-13:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
+    {"名前": "伊藤 直美", "雇用形態": "パート", "月上限日数": 14, "希望時間帯": "13:30-19:00 15:00-20:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
+]
+
 if 'staff_list' not in st.session_state:
-    st.session_state.staff_list = [
-        {"名前": "山田 花子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
-        {"名前": "鈴木 一郎", "雇用形態": "パート", "月上限日数": 12, "希望時間帯": "8:30-13:00 9:00-13:30 7:00-11:00", "時短希望": "あり", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 10, "type": "有休"}]'},
-        {"名前": "佐藤 美咲", "雇用形態": "パート", "月上限日数": 15, "希望時間帯": "15:00-19:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 15, "type": "希休"}, {"day": 16, "type": "希休"}]'},
-        {"名前": "田中 恵子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
-        {"名前": "小林 翔太", "雇用形態": "正社員", "月上限日数": 22, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
-        {"名前": "高橋 陽子", "雇用形態": "パート", "月上限日数": 16, "希望時間帯": "9:00-17:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
-        {"名前": "渡辺 理恵", "雇用形態": "パート", "月上限日数": 10, "希望時間帯": "7:00-12:00 8:00-13:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
-        {"名前": "伊藤 直美", "雇用形態": "パート", "月上限日数": 14, "希望時間帯": "13:30-19:00 15:00-20:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
-    ]
+    st.session_state.staff_list = list(DEFAULT_STAFF_LIST)
+
+if 'staff_backup' not in st.session_state:
+    st.session_state.staff_backup = None
 
 if 'ai_rules' not in st.session_state:
     st.session_state.ai_rules = []
@@ -534,13 +539,34 @@ with tab2:
     df_staff = pd.DataFrame(st.session_state.staff_list)
     edited_staff_df = st.data_editor(df_staff, num_rows="dynamic", key="staff_editor")
     
-    if st.button("変更を確定して職員リストを保存"):
-        st.session_state.staff_list = edited_staff_df.to_dict('records')
-        st.success("✅ 職員リストの変更を確定しました。")
+    col_save, col_clear, col_undo, col_demo = st.columns([1.5, 1.2, 1.5, 1.5])
+    with col_save:
+        if st.button("💾 変更を確定して保存"):
+            st.session_state.staff_list = edited_staff_df.to_dict('records')
+            st.success("✅ 職員リストの変更を確定しました。")
     
-    if st.button("⚠️ 一覧をクリアして初期化"):
-        st.session_state.staff_list = []
-        st.rerun()
+    with col_clear:
+        if st.button("⚠️ 一覧をクリア"):
+            st.session_state.staff_backup = list(st.session_state.staff_list)
+            st.session_state.staff_list = []
+            st.warning("職員一覧をクリアしました。")
+            st.rerun()
+            
+    with col_undo:
+        if st.session_state.staff_backup is not None:
+            if st.button("↩️ 直前の状態に戻す"):
+                st.session_state.staff_list = list(st.session_state.staff_backup)
+                st.session_state.staff_backup = None
+                st.success("✅ クリア前の状態に復元しました！")
+                st.rerun()
+                
+    with col_demo:
+        if st.button("⚙️ デモデータで初期化"):
+            st.session_state.staff_backup = list(st.session_state.staff_list)
+            st.session_state.staff_list = list(DEFAULT_STAFF_LIST)
+            st.success("✅ デモデータを読み込みました！")
+            st.rerun()
+            
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
