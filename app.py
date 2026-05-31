@@ -226,6 +226,9 @@ if 'staff_list' not in st.session_state:
 if 'ai_rules' not in st.session_state:
     st.session_state.ai_rules = []
 
+if 'children_version' not in st.session_state:
+    st.session_state.children_version = 0
+
 # 時間帯別園児数テーブルの初期化 (デフォルト在籍数でプリフィル)
 if 'df_children_state' not in st.session_state:
     init_kids_data = {
@@ -243,6 +246,7 @@ def sync_base_kids_to_table():
     st.session_state.df_children_state["1-2歳児数"] = st.session_state.base_kids_1_2
     st.session_state.df_children_state["3歳児数"] = st.session_state.base_kids_3
     st.session_state.df_children_state["4歳以上児数"] = st.session_state.base_kids_4
+    st.session_state.children_version += 1
 
 # --- Google Gemini API 呼び出し ---
 def parse_rules_with_gemini(api_key, rule_text):
@@ -391,7 +395,7 @@ with tab1:
     edited_children_df = st.data_editor(
         st.session_state.df_children_state, 
         num_rows="fixed", 
-        key="children_editor_v4"
+        key=f"children_editor_v5_{st.session_state.children_version}"
     )
     st.session_state.df_children_state = edited_children_df
     
