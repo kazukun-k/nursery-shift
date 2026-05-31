@@ -487,6 +487,47 @@ with tab2:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.header("👥 保育士・スタッフの勤務条件設定")
     
+    # --- 職員データの保存・復元（CSVインポート/エクスポート） ---
+    st.subheader("💾 職員リストの保存・復元 (毎月の入力の手間を省く)")
+    st.caption("※一度入力した職員リストをPCに保存（ダウンロード）しておけば、次回からはそのファイルをアップロードするだけで一瞬で復元できます。")
+    
+    col_up, col_down = st.columns(2)
+    with col_up:
+        uploaded_file = st.file_uploader("📥 PCから職員リスト（CSVファイル）を読み込む", type=["csv"], key="staff_csv_uploader")
+        if uploaded_file is not None:
+            try:
+                try:
+                    df_uploaded = pd.read_csv(uploaded_file, encoding='utf-8-sig')
+                except Exception:
+                    df_uploaded = pd.read_csv(uploaded_file, encoding='shift_jis')
+                
+                required_cols = ["名前", "雇用形態", "月上限日数", "希望時間帯", "時短希望", "勤務可能曜日", "off_days_json"]
+                if all(col in df_uploaded.columns for col in required_cols):
+                    st.session_state.staff_backup = list(st.session_state.staff_list)
+                    st.session_state.staff_list = df_uploaded[required_cols].to_dict('records')
+                    st.success("🎉 職員リストを正常にインポートしました！")
+                    st.rerun()
+                else:
+                    st.error("⚠️ CSVファイルの形式が違います。ダウンロードした職員リストCSVを使用してください。")
+            except Exception as e:
+                st.error(f"⚠️ 読み込み中にエラーが発生しました: {e}")
+                
+    with col_down:
+        if len(st.session_state.staff_list) > 0:
+            df_staff_download = pd.DataFrame(st.session_state.staff_list)
+            csv_buffer = df_staff_download.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📤 現在の職員リストをCSVでダウンロード",
+                data=csv_buffer,
+                file_name="保育園_職員リスト.csv",
+                mime="text/csv",
+                key="staff_csv_downloader"
+            )
+        else:
+            st.info("⚠️ 職員が登録されていません。新規追加するかデモデータを読み込んでからダウンロードしてください。")
+            
+    st.divider()
+    
     type_staff = st.selectbox("雇用形態", ["正社員", "パート"], key="reg_type_staff")
     
     with st.form("add_staff_form"):
