@@ -7,6 +7,7 @@ from io import BytesIO
 import json
 import math
 import calendar
+import re
 from datetime import datetime
 import google.generativeai as genai
 
@@ -133,18 +134,86 @@ with st.sidebar:
     st.info(f"設定期間: {target_year}年{target_month}月 ({num_days}日間)")
 
 # ==========================================
-# 📂 3. セッション状態の初期化
+# 🧩 3. 時間帯表記揺れパーサーの実装
+# ==========================================
+def parse_work_hours(tz_str):
+    """
+    "8:00〜13:30" や "9;00-13;30" などの表記揺れを含む文字列から、
+    カバーする時間のリスト(整数)を返す関数。
+    例: "8:00〜13:30" -> [8, 9, 10, 11, 12, 13]
+    """
+    if not tz_str or not isinstance(tz_str, str):
+        return []
+    
+    if tz_str == "全日":
+        return list(range(7, 19))
+        
+    # 全角英数字、各種コロン・セミコロン、つなぎ記号を半角・標準に正規化
+    s = tz_str.translate(str.maketrans({
+        '０':'0', '１':'1', '２':'2', '３':'3', '４':'4', '５':'5', '６':'6', '７':'7', '８':'8', '９':'9',
+        '；':':', ';':':', '：':':',
+        '〜':'-', '～':'-', 'ー':'-', '－':'-', '—':'-', 'ー':'-', '─':'-'
+    })).strip()
+    
+    # 1. H:MM - H:MM 形式の抽出
+    match = re.search(r'(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})', s)
+    if match:
+        start_h = int(match.group(1))
+        start_m = int(match.group(2))
+        end_h = int(match.group(3))
+        end_m = int(match.group(4))
+        
+        # 終了時間の「分」が 0 より大きい場合、その時間のスロットもカバーに含める
+        # 例: 13:30終了の場合、13:00〜14:00の時間帯(13)も勤務時間とみなす
+        if end_m > 0:
+            return list(range(start_h, end_h + 1))
+        else:
+            return list(range(start_h, end_h))
+            
+    # 2. H - H 形式の抽出 (分が省略されている場合、例: 8-13)
+    match_hour_only = re.search(r'(\d{1,2})\s*-\s*(\d{1,2})', s)
+    if match_hour_only:
+        start_h = int(match_hour_only.group(1))
+        end_h = int(match_hour_only.group(2))
+        return list(range(start_h, end_h))
+        
+    # 解析できない場合は、安全策としてデフォルト日中勤務 (9-17) をカバーとする
+    return list(range(9, 17))
+
+def get_covered_slots(shift_name):
+    """
+    シフト名（固定名または自由時間記述）から、カバーする時間帯を判定する
+    """
+    if shift_name == "フル":
+        return list(range(8, 18))
+    elif shift_name == "フル早":
+        return list(range(7, 16))
+    elif shift_name == "フル遅":
+        return list(range(10, 19))
+    elif shift_name == "早":
+        return list(range(7, 11))
+    elif shift_name == "日":
+        return list(range(9, 17))
+    elif shift_name == "遅":
+        return list(range(15, 19))
+    elif shift_name == "公休":
+        return []
+    # 自由記述された時間（例: "8:00〜13:30"）の場合
+    return parse_work_hours(shift_name)
+
+# ==========================================
+# 📂 4. セッション状態の初期化
 # ==========================================
 if 'staff_list' not in st.session_state:
     st.session_state.staff_list = [
         {"名前": "山田 花子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし"},
-        {"名前": "鈴木 一郎", "雇用形態": "パート", "月上限日数": 12, "希望時間帯": "朝（7:00-11:00）", "時短希望": "あり"},
-        {"名前": "佐藤 美咲", "雇用形態": "パート", "月上限日数": 15, "希望時間帯": "夕方（15:00-19:00）", "時短希望": "なし"},
+        {"名前": "鈴木 一郎", "雇用形態": "パート", "月上限日数": 12, "希望時間帯": "8:00〜13:30", "時短希望": "あり"},
+        {"名前": "佐藤 美咲", "雇用形態": "パート", "月上限日数": 15, "希望時間帯": "15:00-19:00", "時短希望": "なし"},
         {"名前": "田中 恵子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし"},
         {"名前": "小林 翔太", "雇用形態": "正社員", "月上限日数": 22, "希望時間帯": "全日", "時短希望": "なし"},
-        {"名前": "高橋 陽子", "雇用形態": "パート", "月上限日数": 16, "希望時間帯": "日中（9:00-17:00）", "時短希望": "なし"},
-        {"名前": "渡辺 理恵", "雇用形態": "パート", "月上限日数": 10, "希望時間帯": "朝（7:00-11:00）", "時短希望": "なし"},
-        {"名前": "伊藤 直美", "雇用形態": "パート", "月上限日数": 14, "希望時間帯": "夕方（15:00-19:00）", "時短希望": "なし"},
+        {"名前": "高橋 陽子", "雇用形態": "パート", "月上限日数": 16, "希望時間帯": "9:00-17:00", "時短希望": "なし"},
+        {"名前": "渡辺 理恵", "雇用形態": "パート", "月上限日数": 10, "希望時間帯": "7:00〜12:00", "時短希望": "なし"},
+        {"名前": "伊藤 直美", "雇用形態": "パート", "月上限日数": 14, "希望時間帯": "13:30-19:00", "時短希望": "なし"},
     ]
 
 if 'ai_rules' not in st.session_state:
@@ -156,7 +225,6 @@ def parse_rules_with_gemini(api_key, rule_text):
         return None
     try:
         genai.configure(api_key=api_key)
-        # Gemini-1.5-flashモデルを使用
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
@@ -189,7 +257,6 @@ JSONには、抽出されたルールが含まれる "rules" キーのリスト�
             generation_config={"response_mime_type": "application/json"}
         )
         
-        # 不要な文字をトリムしてパース
         clean_text = response.text.strip()
         if clean_text.startswith("```json"):
             clean_text = clean_text[7:]
@@ -231,7 +298,6 @@ with tab1:
     if run_ai:
         if not api_key_input:
             st.warning("⚠️ APIキーが設定されていません。無料デモ用ルールを適用します。")
-            # デモ用簡易モックルール
             if "7-9" in custom_rule_text and "合同" in custom_rule_text:
                 st.session_state.ai_rules = [
                     {"start_hour": 7, "end_hour": 9, "min_staff": 2, "reason": "【デモ適用】7-9時合同保育のため最低2名"}
@@ -246,7 +312,7 @@ with tab1:
                 extracted_rules = parse_rules_with_gemini(api_key_input, custom_rule_text)
                 if extracted_rules:
                     st.session_state.ai_rules = extracted_rules
-                    st.success(f"🎉 AI解析成功！ {len(extracted_rules)}件のルールを適用しました。")
+                    st.success(f"🎉 AI解析成功！ {len(extracted_rules)}件 of ルールを適用しました。")
                 else:
                     st.info("特殊ルールは検出されませんでした。標準の配置基準を適用します。")
                     st.session_state.ai_rules = []
@@ -277,18 +343,14 @@ with tab1:
     def calculate_required_staff_with_ai(row):
         current_hour = int(row["時間帯"].split(":")[0])
         
-        # 1. 配置基準による基本必要人数の計算
-        # 基準：0歳児 1:3, 1-2歳児 1:6, 3歳児 1:20, 4歳以上児 1:30
         count = (row["0歳児数"]/3) + (row["1-2歳児数"]/6) + (row["3歳児数"]/20) + (row["4歳以上児数"]/30)
         base_staff = math.ceil(count)
         
-        # 2. AIルールの適用
-        min_staff_req = 1  # 法律上の最低配置数は通常2人以上（保育園の規模によるが、ここでは標準として計算）
+        min_staff_req = 1
         for rule in st.session_state.ai_rules:
             if rule["start_hour"] <= current_hour < rule["end_hour"]:
                 min_staff_req = max(min_staff_req, rule["min_staff"])
                 
-        # 最低基準と基本計算結果の大きい方を採用
         final_staff = max(base_staff, min_staff_req)
         return final_staff
 
@@ -315,7 +377,12 @@ with tab2:
             type_staff = st.selectbox("雇用形態", ["正社員", "パート"])
         with col2:
             max_days = st.number_input("月間勤務上限日数", min_value=1, max_value=31, value=20, help="このスタッフが1ヶ月に勤務できる最大日数です。")
-            time_zone = st.selectbox("勤務可能時間帯", ["全日", "朝（7:00-11:00）", "日中（9:00-17:00）", "夕方（15:00-19:00）"])
+            time_zone = st.text_input(
+                "勤務可能時間帯（自由記述）", 
+                value="全日", 
+                placeholder="例: 8:00〜13:30, 9:00-17:00, 全日",
+                help="『8:00〜13:30』や『9:00-13:30』のように任意の時間を入力できます。『全日』と書くと早番から遅番まで全ての時間帯の勤務候補になります。"
+            )
         with col3:
             short_time = st.selectbox("時短希望", ["なし", "あり"])
             submit = st.form_submit_button("この条件で職員を追加")
@@ -329,7 +396,7 @@ with tab2:
     st.divider()
 
     st.subheader("📋 現在の職員一覧")
-    st.caption("※一覧に表示されるデータをダブルクリックで修正できます。")
+    st.caption("※一覧に表示されるデータをダブルクリックで直接修正・追加入力できます。")
     
     # 編集可能なデータフレーム
     df_staff = pd.DataFrame(st.session_state.staff_list)
@@ -355,34 +422,12 @@ with tab3:
     
     # --- シフト生成アルゴリズム ---
     def generate_auto_schedule(df_kids, staff_list, target_year, target_month, num_days):
-        # シフトパターンの定義
-        # 早: 7:00 - 11:00 (スロット 7,8,9,10)
-        # 遅: 15:00 - 19:00 (スロット 15,16,17,18)
-        # 日: 9:00 - 17:00 (スロット 9,10,11,12,13,14,15,16)
-        # フル: 8:00 - 17:00 (スロット 8,9,10,11,12,13,14,15,16,17) -> 主に正社員
-        # フル早: 7:00 - 16:00 (スロット 7,8,9,10,11,12,13,14,15)
-        # フル遅: 10:00 - 19:00 (スロット 10,11,12,13,14,15,16,17,18)
-        
-        shift_slots = {
-            "早": [7, 8, 9, 10],
-            "遅": [15, 16, 17, 18],
-            "日": [9, 10, 11, 12, 13, 14, 15, 16],
-            "フル": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
-            "フル早": [7, 8, 9, 10, 11, 12, 13, 14, 15],
-            "フル遅": [10, 11, 12, 13, 14, 15, 16, 17, 18],
-            "公休": []
-        }
-        
         # 1時間ごとの必要人数を取得
         req_by_hour = {}
         for idx, row in df_kids.iterrows():
             hour = int(row["時間帯"].split(":")[0])
             req_by_hour[hour] = row["必要保育士数"]
             
-        # 出力用のデータ構造初期化
-        # columns: 名前, 1日, 2日, ..., N日
-        schedule_df = pd.DataFrame(columns=["名前", "雇用形態"] + [f"{d}日" for d in range(1, num_days + 1)])
-        
         # 各職員の勤務日数カウンター
         staff_work_days = {staff["名前"]: 0 for staff in staff_list}
         
@@ -406,7 +451,6 @@ with tab3:
             is_weekend = weekday in [5, 6]
             
             # その日の必要人数
-            # 土日は必要人数を半分（切り上げ、最低1名）にする簡易想定
             daily_req = {}
             for h in range(7, 19):
                 req = req_by_hour.get(h, 1)
@@ -414,9 +458,8 @@ with tab3:
                     req = max(1, math.ceil(req * 0.5))
                 daily_req[h] = req
                 
-            # スタッフの割り当て優先度を決める（出勤日数が上限に遠く、当日に勤務可能）
-            # 毎日シャッフルまたはスコア順で偏りを防ぐ
-            def get_eligible_staff(hour_req, assigned_today):
+            # 当日割り当て可能なスタッフを取得（勤務日数が上限に達していない人）
+            def get_eligible_staff(assigned_today):
                 eligible = []
                 for s in staff_list:
                     s_name = s["名前"]
@@ -424,61 +467,77 @@ with tab3:
                         continue
                     if staff_work_days[s_name] >= s["月上限日数"]:
                         continue
-                    
-                    # 希望時間帯のチェック
-                    pref = s["希望時間帯"]
-                    role = s["雇用形態"]
-                    
                     eligible.append((s, staff_work_days[s_name]))
                 
-                # 勤務日数が少ない人を優先
+                # 勤務実績が少ない順にソート（平準化）
                 eligible.sort(key=lambda x: x[1])
                 return [x[0] for x in eligible]
 
             assigned_today = {} # 名前 -> シフト名
             
-            # 優先スロットの割り当て
-            # パス1：早朝（7:00）をカバーするシフトの割り当て
-            needed_morning = daily_req.get(7, 1)
-            morning_staff = [s for s in get_eligible_staff(needed_morning, assigned_today) 
-                             if s["希望時間帯"] in ["全日", "朝（7:00-11:00）"]]
+            # パス1：早朝（7:00および8:00）をカバーするスタッフの割り当て
+            needed_morning = max(daily_req.get(7, 1), daily_req.get(8, 1))
+            morning_candidates = []
+            for s in get_eligible_staff(assigned_today):
+                pref = s["希望時間帯"]
+                covered = parse_work_hours(pref)
+                # 7時または8時をカバーできるスタッフ
+                if 7 in covered or 8 in covered:
+                    morning_candidates.append(s)
             
-            for s in morning_staff[:needed_morning]:
+            for s in morning_candidates[:needed_morning]:
                 s_name = s["名前"]
-                shift = "フル早" if s["雇用形態"] == "正社員" else "早"
-                assigned_today[s_name] = shift
+                # 正社員で希望時間帯が「全日」の場合は「フル早」を割り当てる
+                if s["雇用形態"] == "正社員" and s["希望時間帯"] == "全日":
+                    assigned_today[s_name] = "フル早"
+                else:
+                    # パートまたは個別指定時間の場合は、その時間帯の文字列をそのままシフト名にする
+                    assigned_today[s_name] = s["希望時間帯"]
                 staff_work_days[s_name] += 1
                 
-            # パス2：遅番（18:00）をカバーするシフトの割り当て
-            needed_evening = daily_req.get(18, 1)
-            evening_staff = [s for s in get_eligible_staff(needed_evening, assigned_today) 
-                             if s["希望時間帯"] in ["全日", "夕方（15:00-19:00）"]]
+            # パス2：遅番（17:00および18:00）をカバーするスタッフの割り当て
+            needed_evening = max(daily_req.get(17, 1), daily_req.get(18, 1))
+            evening_candidates = []
+            for s in get_eligible_staff(assigned_today):
+                pref = s["希望時間帯"]
+                covered = parse_work_hours(pref)
+                # 17時または18時をカバーできるスタッフ
+                if 17 in covered or 18 in covered:
+                    evening_candidates.append(s)
             
-            for s in evening_staff[:needed_evening]:
+            for s in evening_candidates[:needed_evening]:
                 s_name = s["名前"]
-                shift = "フル遅" if s["雇用形態"] == "正社員" else "遅"
-                assigned_today[s_name] = shift
+                if s["雇用形態"] == "正社員" and s["希望時間帯"] == "全日":
+                    assigned_today[s_name] = "フル遅"
+                else:
+                    assigned_today[s_name] = s["希望時間帯"]
                 staff_work_days[s_name] += 1
                 
-            # パス3：昼間の時間帯をカバーする日勤またはフルを割り当て
-            # 時間帯 9:00〜17:00 で最大の不足を計算
+            # パス3：日中時間帯（9:00〜16:00）の最大不足スロットを埋めるための割り当て
             max_mid_need = 0
             for h in range(9, 17):
-                current_assigned = sum(1 for name, sh in assigned_today.items() if h in shift_slots[sh])
+                current_assigned = sum(1 for name, sh in assigned_today.items() if h in get_covered_slots(sh))
                 need = max(0, daily_req[h] - current_assigned)
                 if need > max_mid_need:
                     max_mid_need = need
                     
-            mid_staff = [s for s in get_eligible_staff(max_mid_need, assigned_today) 
-                         if s["希望時間帯"] in ["全日", "日中（9:00-17:00）"]]
+            mid_candidates = []
+            for s in get_eligible_staff(assigned_today):
+                pref = s["希望時間帯"]
+                covered = parse_work_hours(pref)
+                # 9〜16時のどこかをカバーできるスタッフ
+                if any(hour in covered for hour in range(9, 17)):
+                    mid_candidates.append(s)
             
-            for s in mid_staff[:max_mid_need]:
+            for s in mid_candidates[:max_mid_need]:
                 s_name = s["名前"]
-                shift = "フル" if s["雇用形態"] == "正社員" else "日"
-                assigned_today[s_name] = shift
+                if s["雇用形態"] == "正社員" and s["希望時間帯"] == "全日":
+                    assigned_today[s_name] = "フル"
+                else:
+                    assigned_today[s_name] = s["希望時間帯"]
                 staff_work_days[s_name] += 1
                 
-            # 全員分の今日のシフトをデータフレームに書き込み
+            # 各職員の今日のシフトをデータフレームに反映
             for s_name, shift in assigned_today.items():
                 schedule_df.at[s_name, day_col] = shift
                 
@@ -490,7 +549,7 @@ with tab3:
         st.warning("⚠️ 職員が登録されていません。「職員条件設定」タブから職員を追加してください。")
     else:
         if st.button("⚡ シフトを自動生成する"):
-            with st.spinner("カレンダー要件に基づき、最適なシフトを計算中..."):
+            with st.spinner("カレンダー要件および個別稼働時間に基づき、最適なシフトを計算中..."):
                 schedule_result = generate_auto_schedule(
                     edited_df, 
                     st.session_state.staff_list, 
@@ -503,17 +562,15 @@ with tab3:
 
         # 生成結果があれば表示
         if 'schedule_result' in st.session_state:
-            st.subheader("📅 作成されたシフト表 (編集可能)")
-            st.caption("※自動生成されたシフトを直接ダブルクリックで手動調整できます（早、日、遅、フル、フル早、フル遅、公休）")
+            st.subheader("📅 作成されたシフト表 (手動微調整も可能)")
+            st.caption("※セルをダブルクリックすることで、手動で任意の勤務時間に直接書き換えることもできます。")
             
-            # 手動編集可能なシフト表
             edited_schedule = st.data_editor(
                 st.session_state.schedule_result, 
                 key="schedule_editor", 
                 num_rows="fixed"
             )
             
-            # 更新ボタン
             if st.button("シフト表の調整内容を保存"):
                 st.session_state.schedule_result = edited_schedule
                 st.success("✅ 調整されたシフトを保存しました！")
@@ -526,6 +583,7 @@ with tab3:
                 stat_data.append({
                     "名前": row["名前"],
                     "雇用形態": row["雇用形態"],
+                    "登録された希望時間": row["希望時間帯"] if "希望時間帯" in edited_schedule.columns else "個別設定",
                     "当月出勤日数": work_days_count
                 })
             st.dataframe(pd.DataFrame(stat_data))
@@ -542,8 +600,8 @@ with tab3:
                 # スタイル定義
                 font_title = Font(name="Meiryo UI", size=14, bold=True, color="2F3542")
                 font_header = Font(name="Meiryo UI", size=10, bold=True, color="FFFFFF")
-                font_data = Font(name="Meiryo UI", size=10)
-                font_bold = Font(name="Meiryo UI", size=10, bold=True)
+                font_data = Font(name="Meiryo UI", size=9)
+                font_bold = Font(name="Meiryo UI", size=9, bold=True)
                 
                 fill_primary = PatternFill(start_color="FF6B8B", end_color="FF6B8B", fill_type="solid")
                 fill_secondary = PatternFill(start_color="70A1FF", end_color="70A1FF", fill_type="solid")
@@ -570,13 +628,11 @@ with tab3:
                 ws_schedule.cell(row=1, column=1, value=f"📛 {year}年{month}月 保育士シフト表").font = font_title
                 ws_schedule.row_dimensions[1].height = 30
                 
-                # ヘッダー行の追加
                 headers = list(df_schedule.columns)
                 ws_schedule.append([]) # 空白行
                 ws_schedule.append(headers + ["出勤日数"])
                 ws_schedule.row_dimensions[3].height = 25
                 
-                # ヘッダーのスタイル適用
                 for c_idx in range(1, len(headers) + 2):
                     cell = ws_schedule.cell(row=3, column=c_idx)
                     cell.fill = fill_primary
@@ -584,13 +640,11 @@ with tab3:
                     cell.alignment = align_center
                     cell.border = border_thin
                 
-                # データ行の書き込みとスタイル
                 for r_idx, row in enumerate(df_schedule.values, 4):
                     row_list = list(row)
                     ws_schedule.append(row_list)
                     ws_schedule.row_dimensions[r_idx].height = 22
                     
-                    # 出勤日数カウント数式の追加 (=COUNTA(C4:AG4)-COUNTIF(C4:AG4,"公休"))
                     last_col_letter = get_column_letter(len(headers))
                     formula = f'=COUNTIF(C{r_idx}:{last_col_letter}{r_idx}, "<>公休")'
                     ws_schedule.cell(row=r_idx, column=len(headers) + 1, value=formula).font = font_bold
@@ -602,25 +656,24 @@ with tab3:
                         cell.font = font_data
                         cell.border = border_thin
                         
-                        # 名前の列は左寄せ、その他は中央寄せ
                         if c_idx == 1:
                             cell.alignment = align_left
                         else:
                             cell.alignment = align_center
                             
-                        # シフト名に応じた色分け (公休はグレー等)
                         val = cell.value
                         if val == "公休":
                             cell.fill = fill_off
-                            cell.font = Font(name="Meiryo UI", size=10, color="747D8C")
-                        elif val in ["早", "遅", "日", "フル", "フル早", "フル遅"]:
-                            cell.font = Font(name="Meiryo UI", size=10, bold=True)
+                            cell.font = Font(name="Meiryo UI", size=9, color="747D8C")
+                        elif val:
+                            cell.font = Font(name="Meiryo UI", size=9, bold=True)
                             
-                # 列幅の自動調整
+                # 列幅の自動調整（個別時間が入るため、余裕を持たせた調整）
                 for col in ws_schedule.columns:
                     max_len = max(len(str(cell.value or '')) for cell in col)
                     col_letter = get_column_letter(col[0].column)
-                    ws_schedule.column_dimensions[col_letter].width = max(max_len + 3, 8)
+                    # 英語文字と日本語文字の長さの差異を考慮
+                    ws_schedule.column_dimensions[col_letter].width = max(max_len + 3, 11)
                 
                 # --- シート2: 必要人数要件 ---
                 ws_kids = wb.create_sheet(title="時間帯別必要人数")
@@ -642,7 +695,6 @@ with tab3:
                         else:
                             cell.font = font_data
                 
-                # 列幅調整
                 for col in ws_kids.columns:
                     max_len = max(len(str(cell.value or '')) for cell in col)
                     col_letter = get_column_letter(col[0].column)
@@ -670,7 +722,6 @@ with tab3:
                             if c_idx == 1:
                                 cell.alignment = align_left
                 
-                # 列幅調整
                 for col in ws_staff.columns:
                     max_len = max(len(str(cell.value or '')) for cell in col)
                     col_letter = get_column_letter(col[0].column)
