@@ -438,7 +438,7 @@ with tab1:
     def calculate_required_staff_with_ai(row):
         current_hour = int(row["時間帯"].split(":")[0])
         
-        count = (row["0歳児数"]/3) + (row["1-2歳児数"]/6) + (row["3歳児数"]/20) + (row["4歳以上児数"]/30)
+        count = (row["0歳児数"]/3) + (row["1-2歳児数"]/6) + (row["3歳児数"]/15) + (row["4歳以上児数"]/25)
         base_staff = math.ceil(count)
         
         min_staff_req = 1
