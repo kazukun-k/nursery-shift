@@ -134,7 +134,7 @@ with st.sidebar:
     st.info(f"設定期間: {target_year}年{target_month}月 ({num_days}日間)")
 
 # ==========================================
-# 🧩 3. 時間枠 & 記号・表記揺れパーサーの実装
+# 🧩 3. 30分スロット定義 & 表記揺れパーサーの実装
 # ==========================================
 # 7:00〜20:00の30分刻み（合計 26 スロット）
 TIME_SLOT_HOURS = []
@@ -154,6 +154,10 @@ REGULAR_PATTERNS = {
 }
 
 def parse_work_hours(tz_str):
+    """
+    "8:30-13:00 9:00-13:30 7:00-11:00" などの複数候補をパースし、
+    それぞれの候補の時間スロットインデックス(0〜25)のリストのリストを返す。
+    """
     if not tz_str or not isinstance(tz_str, str):
         return []
     if tz_str == "全日":
@@ -205,27 +209,103 @@ def get_covered_slots(shift_name):
     return candidates[0] if candidates else []
 
 # ==========================================
-# 🧩 4. Gemini による職員の備考欄・希望休み解析
+# 📂 4. セッション状態の初期化
 # ==========================================
+if 'staff_list' not in st.session_state:
+    st.session_state.staff_list = [
+        {"名前": "山田 花子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
+        {"名前": "鈴木 一郎", "雇用形態": "パート", "月上限日数": 12, "希望時間帯": "8:30-13:00 9:00-13:30 7:00-11:00", "時短希望": "あり", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 10, "type": "有休"}]'},
+        {"名前": "佐藤 美咲", "雇用形態": "パート", "月上限日数": 15, "希望時間帯": "15:00-19:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 15, "type": "希休"}, {"day": 16, "type": "希休"}]'},
+        {"名前": "田中 恵子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
+        {"名前": "小林 翔太", "雇用形態": "正社員", "月上限日数": 22, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
+        {"名前": "高橋 陽子", "雇用形態": "パート", "月上限日数": 16, "希望時間帯": "9:00-17:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
+        {"名前": "渡辺 理恵", "雇用形態": "パート", "月上限日数": 10, "希望時間帯": "7:00-12:00 8:00-13:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
+        {"名前": "伊藤 直美", "雇用形態": "パート", "月上限日数": 14, "希望時間帯": "13:30-19:00 15:00-20:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
+    ]
+
+if 'ai_rules' not in st.session_state:
+    st.session_state.ai_rules = []
+
+# 時間帯別園児数テーブルの初期化 (デフォルト在籍数でプリフィル)
+if 'df_children_state' not in st.session_state:
+    init_kids_data = {
+        "時間帯": time_slots,
+        "0歳児数": [6] * 26,
+        "1-2歳児数": [12] * 26,
+        "3歳児数": [18] * 26,
+        "4歳以上児数": [22] * 26
+    }
+    st.session_state.df_children_state = pd.DataFrame(init_kids_data)
+
+# --- 基本在籍数の変更を時間帯別テーブルに同期する関数 ---
+def sync_base_kids_to_table():
+    st.session_state.df_children_state["0歳児数"] = st.session_state.base_kids_0
+    st.session_state.df_children_state["1-2歳児数"] = st.session_state.base_kids_1_2
+    st.session_state.df_children_state["3歳児数"] = st.session_state.base_kids_3
+    st.session_state.df_children_state["4歳以上児数"] = st.session_state.base_kids_4
+
+# --- Google Gemini API 呼び出し ---
+def parse_rules_with_gemini(api_key, rule_text):
+    if not api_key:
+        return None
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        prompt = f"""
+あなたは保育園のシフト管理システムのアシスタントです。
+園長が入力した以下の「園独自の特殊ルール（日本語）」を解析し、時間帯別の必要人数に対する補正ルールを抽出してください。
+なお、時間帯は30分刻み（7:00から20:00まで）で計算されています。
+
+【ルール記述】
+{rule_text}
+
+【出力フォーマット】
+必ず以下の構造のJSONオブジェクトのみを返してください。不要な説明やマークダウンタグは含めず、純粋なJSONオブジェクト単体、もしくは ```json ... ``` で囲んで出力してください。
+JSONには、抽出されたルールが含まれる "rules" キーのリストを設定してください。
+
+出力スキーマ:
+{{
+  "rules": [
+    {{
+      "start_hour": 7,  // 開始時間（数値、例: 7）
+      "end_hour": 9,    // 終了時間（数値、例: 9。これは9:00までを意味します）
+      "min_staff": 2,   // 最低必要な保育士の人数（数値）
+      "reason": "合同保育のため" // ルールの理由（文字列、例: 合同保育のため）
+    }}
+  ]
+}}
+
+※該当するルールがない、または解析できない場合は、空のリスト `{"rules": []}` を返してください。
+"""
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        
+        clean_text = response.text.strip()
+        if clean_text.startswith("```json"):
+            clean_text = clean_text[7:]
+        if clean_text.endswith("```"):
+            clean_text = clean_text[:-3]
+        
+        data = json.loads(clean_text)
+        return data.get("rules", [])
+    except Exception as e:
+        st.error(f"Gemini APIでの解析中にエラーが発生しました: {str(e)}")
+        return None
+
 def parse_staff_details_with_gemini(api_key, remark_text):
-    """
-    備考欄（自由記述）から勤務希望時間帯、希望休み（有休・希望公休）を抽出する。
-    """
     if not remark_text:
         return {"work_hours": "全日", "off_days": []}
         
-    # デモ用の簡易パース（APIキー未入力時）
     if not api_key:
         off_days = []
-        # 「10日は有休」のような記述に対応
         if "10" in remark_text and "有休" in remark_text:
             off_days.append({"day": 10, "type": "有休"})
-        
-        # 15〜17日は希望公休
         if "15" in remark_text and "17" in remark_text and ("希望公休" in remark_text or "休み希望" in remark_text):
             off_days.extend([{"day": 15, "type": "希休"}, {"day": 16, "type": "希休"}, {"day": 17, "type": "希休"}])
             
-        # 時間帯候補の抽出
         times = re.findall(r'\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}', remark_text)
         time_str = " ".join(times) if times else ("全日" if "全日" in remark_text else remark_text)
         
@@ -239,7 +319,7 @@ def parse_staff_details_with_gemini(api_key, remark_text):
 あなたは保育園のシフト管理システムのアシスタントです。
 保育士が入力した以下の「希望時間帯・備考（日本語）」を解析し、
 ①希望する勤務時間帯（複数ある場合はスペース区切り）
-②希望する休みの日程（日付と休みの種類：有休（有給休暇） または 希休（希望公休））
+②希望する休みの日程（日付と休みの種類：有休 または 希休（希望公休））
 を抽出してください。
 
 【備考記述】
@@ -278,46 +358,35 @@ def parse_staff_details_with_gemini(api_key, remark_text):
         return {"work_hours": remark_text, "off_days": []}
 
 # ==========================================
-# 📂 5. セッション状態の初期化
-# ==========================================
-if 'staff_list' not in st.session_state:
-    st.session_state.staff_list = [
-        {"名前": "山田 花子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
-        {"名前": "鈴木 一郎", "雇用形態": "パート", "月上限日数": 12, "希望時間帯": "8:30-13:00 9:00-13:30 7:00-11:00", "時短希望": "あり", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 10, "type": "有休"}]'},
-        {"名前": "佐藤 美咲", "雇用形態": "パート", "月上限日数": 15, "希望時間帯": "15:00-19:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": '[{"day": 15, "type": "希休"}, {"day": 16, "type": "希休"}]'},
-        {"名前": "田中 恵子", "雇用形態": "正社員", "月上限日数": 20, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
-        {"名前": "小林 翔太", "雇用形態": "正社員", "月上限日数": 22, "希望時間帯": "全日", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金,土", "off_days_json": "[]"},
-        {"名前": "高橋 陽子", "雇用形態": "パート", "月上限日数": 16, "希望時間帯": "9:00-17:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
-        {"名前": "渡辺 理恵", "雇用形態": "パート", "月上限日数": 10, "希望時間帯": "7:00-12:00 8:00-13:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
-        {"名前": "伊藤 直美", "雇用形態": "パート", "月上限日数": 14, "希望時間帯": "13:30-19:00 15:00-20:00", "時短希望": "なし", "勤務可能曜日": "月,火,水,木,金", "off_days_json": "[]"},
-    ]
-
-if 'ai_rules' not in st.session_state:
-    st.session_state.ai_rules = []
-
-if 'df_children_state' not in st.session_state:
-    init_kids_data = {
-        "時間帯": time_slots,
-        "0歳児数": [3, 3, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 3, 3, 2, 2, 1, 1, 1, 1],
-        "1-2歳児数": [5, 5, 10, 10, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 10, 10, 8, 8, 5, 5, 2, 2, 1, 1],
-        "3歳児数": [2, 2, 15, 15, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 15, 15, 10, 10, 4, 4, 1, 1, 1, 1],
-        "4歳以上児数": [5, 5, 20, 20, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 20, 20, 15, 15, 8, 8, 2, 2, 1, 1]
-    }
-    st.session_state.df_children_state = pd.DataFrame(init_kids_data)
-
-# --- タブ構成 ---
-tab1, tab2, tab3 = st.tabs([
-    "📊 園児数・必要人数計算", 
-    "👥 職員条件設定", 
-    "🗓️ シフト自動生成・Excel出力"
-])
-
-# ==========================================
 # タブ1: 園児数・必要人数計算
 # ==========================================
 with tab1:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.header("🏢 園児数設定とAI変則ルール")
+    st.header("🏫 園の基本情報（在籍園児数）")
+    st.caption("※ここに人数を入力すると、下の時間帯別テーブルに自動で反映されます。")
+    
+    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+    with col_b1:
+        st.number_input("0歳児クラス在籍数", min_value=0, max_value=100, value=6, key="base_kids_0", on_change=sync_base_kids_to_table)
+    with col_b2:
+        st.number_input("1-2歳児クラス在籍数", min_value=0, max_value=100, value=12, key="base_kids_1_2", on_change=sync_base_kids_to_table)
+    with col_b3:
+        st.number_input("3歳児クラス在籍数", min_value=0, max_value=100, value=18, key="base_kids_3", on_change=sync_base_kids_to_table)
+    with col_b4:
+        st.number_input("4歳以上児クラス在籍数", min_value=0, max_value=100, value=22, key="base_kids_4", on_change=sync_base_kids_to_table)
+        
+    st.divider()
+    
+    st.header("🏢 時間帯別の園児数調整 (30分刻み)")
+    st.caption("※基本情報が自動反映されています。園児が少ない時間帯（早朝や夕方など）は、下の表をダブルクリックして手動で人数を減らしてください。")
+
+    # 編集可能なデータエディタ
+    edited_children_df = st.data_editor(
+        st.session_state.df_children_state, 
+        num_rows="fixed", 
+        key="children_editor_v4"
+    )
+    st.session_state.df_children_state = edited_children_df
     
     st.subheader("📝 園独自の特殊ルール（AI自動判定）")
     custom_rule_text = st.text_area(
@@ -358,22 +427,7 @@ with tab1:
 
     st.divider()
 
-    st.subheader("🧒 時間帯別の園児数設定 (30分刻み)")
-    
-    if st.button("📋 1行目の園児数をすべての時間帯にコピーする"):
-        first_row = st.session_state.df_children_state.iloc[0]
-        for col in ["0歳児数", "1-2歳児数", "3歳児数", "4歳以上児数"]:
-            st.session_state.df_children_state[col] = first_row[col]
-        st.success("1行目のデータを全ての時間帯にコピーしました！下の表で微調整できます。")
-        st.rerun()
-
-    edited_children_df = st.data_editor(
-        st.session_state.df_children_state, 
-        num_rows="fixed", 
-        key="children_editor_v3"
-    )
-    st.session_state.df_children_state = edited_children_df
-    
+    # 配置基準＋AI補正計算
     def calculate_required_staff_with_ai(row):
         current_hour = int(row["時間帯"].split(":")[0])
         
@@ -532,14 +586,12 @@ with tab3:
                     req = max(1, math.ceil(req * 0.5))
                 daily_req[idx] = req
                 
-            # 出勤中（またはすでに休み希望が割り当て済み）のスタッフの状況を確認
             assigned_today = {}
             assigned_counts = {idx: 0 for idx in range(26)}
             
             for s in staff_list:
                 s_name = s["名前"]
                 existing_shift = schedule_df.at[s_name, day_col]
-                # すでに「有休」や「希休」が入っている人は、今日の候補から除外
                 if existing_shift in ["有休", "希休"]:
                     assigned_today[s_name] = existing_shift
             
@@ -662,8 +714,7 @@ with tab3:
                         break
                         
             for s_name, shift in assigned_today.items():
-                # 「有休」「希休」はすでに埋まっているので上書きしない
-                if schedule_df.at[s_name, day_col] not in ["有休", "希休"]:
+                if schedule_df.at[s_name, day_col] not in ["確実に休み", "有休", "希休"]:
                     schedule_df.at[s_name, day_col] = shift
                 
         schedule_df.reset_index(inplace=True)
@@ -751,7 +802,6 @@ with tab3:
                 st.error("⚠️ **保育士の配置不足が発生している時間帯があります（下の情報を元に公休をずらす等の交渉をしてください）**")
                 
                 shortages_df = pd.DataFrame(shortages)
-                # 日付ごとにグループ化して綺麗に表示
                 for day, group in shortages_df.groupby("day_col"):
                     weekday_str = group.iloc[0]["weekday"]
                     msg = f"**📅 {day}({weekday_str}) の人員不足箇所:**\n"
@@ -792,8 +842,8 @@ with tab3:
                 fill_secondary = PatternFill(start_color="70A1FF", end_color="70A1FF", fill_type="solid")
                 fill_weekend = PatternFill(start_color="F1F2F6", end_color="F1F2F6", fill_type="solid")
                 fill_off = PatternFill(start_color="E4E7EB", end_color="E4E7EB", fill_type="solid")
-                fill_paid = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid") # 有休（薄オレンジ）
-                fill_requested = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid") # 希休（薄黄）
+                fill_paid = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+                fill_requested = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
                 
                 border_thin = Border(
                     left=Side(style='thin', color='CED6E0'),
@@ -832,7 +882,6 @@ with tab3:
                     last_row_idx = r_idx
                     
                     last_col_letter = get_column_letter(len(headers))
-                    # 公休、有休、希休以外をカウントする数式
                     formula = f'=COUNTIFS(C{r_idx}:{last_col_letter}{r_idx}, "<>公休", C{r_idx}:{last_col_letter}{r_idx}, "<>有休", C{r_idx}:{last_col_letter}{r_idx}, "<>希休")'
                     ws_schedule.cell(row=r_idx, column=len(headers) + 1, value=formula).font = font_bold
                     ws_schedule.cell(row=r_idx, column=len(headers) + 1).alignment = align_center
@@ -852,6 +901,9 @@ with tab3:
                         if val == "公休":
                             cell.fill = fill_off
                             cell.font = Font(name="Meiryo UI", size=9, color="747D8C")
+                        elif val == "暗黒":
+                            cell.fill = fill_off
+                            cell.font = Font(name="Meiryo UI", size=9, color="747D8C")
                         elif val == "有休":
                             cell.fill = fill_paid
                             cell.font = Font(name="Meiryo UI", size=9, bold=True, color="C00000")
@@ -860,7 +912,7 @@ with tab3:
                             cell.font = Font(name="Meiryo UI", size=9, bold=True, color="7F6000")
                         elif val in ["A", "B", "C", "D", "E"]:
                             cell.font = Font(name="Meiryo UI", size=9, bold=True)
-                            cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid") # 正社員は薄緑
+                            cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
                         elif val:
                             cell.font = Font(name="Meiryo UI", size=9, bold=True)
                             
