@@ -229,6 +229,15 @@ if 'ai_rules' not in st.session_state:
 if 'children_version' not in st.session_state:
     st.session_state.children_version = 0
 
+if 'base_kids_0' not in st.session_state:
+    st.session_state.base_kids_0 = 6
+if 'base_kids_1_2' not in st.session_state:
+    st.session_state.base_kids_1_2 = 12
+if 'base_kids_3' not in st.session_state:
+    st.session_state.base_kids_3 = 18
+if 'base_kids_4' not in st.session_state:
+    st.session_state.base_kids_4 = 22
+
 # 時間帯別園児数テーブルの初期化 (デフォルト在籍数でプリフィル)
 if 'df_children_state' not in st.session_state:
     init_kids_data = {
@@ -378,13 +387,13 @@ with tab1:
     
     col_b1, col_b2, col_b3, col_b4 = st.columns(4)
     with col_b1:
-        st.number_input("0歳児クラス在籍数", min_value=0, max_value=100, value=6, key="base_kids_0", on_change=sync_base_kids_to_table)
+        st.number_input("0歳児クラス在籍数", min_value=0, max_value=100, key="base_kids_0", on_change=sync_base_kids_to_table)
     with col_b2:
-        st.number_input("1-2歳児クラス在籍数", min_value=0, max_value=100, value=12, key="base_kids_1_2", on_change=sync_base_kids_to_table)
+        st.number_input("1-2歳児クラス在籍数", min_value=0, max_value=100, key="base_kids_1_2", on_change=sync_base_kids_to_table)
     with col_b3:
-        st.number_input("3歳児クラス在籍数", min_value=0, max_value=100, value=18, key="base_kids_3", on_change=sync_base_kids_to_table)
+        st.number_input("3歳児クラス在籍数", min_value=0, max_value=100, key="base_kids_3", on_change=sync_base_kids_to_table)
     with col_b4:
-        st.number_input("4歳以上児クラス在籍数", min_value=0, max_value=100, value=22, key="base_kids_4", on_change=sync_base_kids_to_table)
+        st.number_input("4歳以上児クラス在籍数", min_value=0, max_value=100, key="base_kids_4", on_change=sync_base_kids_to_table)
         
     st.divider()
     
@@ -397,7 +406,8 @@ with tab1:
         num_rows="fixed", 
         key=f"children_editor_v5_{st.session_state.children_version}"
     )
-    st.session_state.df_children_state = edited_children_df
+    # オブジェクト参照を固定するため、インプレースで値を書き換える
+    st.session_state.df_children_state.loc[:, :] = edited_children_df.values
     
     st.subheader("📝 園独自の特殊ルール（AI自動判定）")
     custom_rule_text = st.text_area(
