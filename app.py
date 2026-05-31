@@ -248,6 +248,10 @@ if 'df_children_state' not in st.session_state:
         "4歳以上児数": [22] * 26
     }
     st.session_state.df_children_state = pd.DataFrame(init_kids_data)
+    st.session_state.df_children_active = st.session_state.df_children_state.copy()
+
+if 'df_children_active' not in st.session_state and 'df_children_state' in st.session_state:
+    st.session_state.df_children_active = st.session_state.df_children_state.copy()
 
 # --- 基本在籍数の変更を時間帯別テーブルに同期する関数 ---
 def sync_base_kids_to_table():
@@ -255,6 +259,7 @@ def sync_base_kids_to_table():
     st.session_state.df_children_state["1-2歳児数"] = st.session_state.base_kids_1_2
     st.session_state.df_children_state["3歳児数"] = st.session_state.base_kids_3
     st.session_state.df_children_state["4歳以上児数"] = st.session_state.base_kids_4
+    st.session_state.df_children_active = st.session_state.df_children_state.copy()
     st.session_state.children_version += 1
 
 # --- Google Gemini API 呼び出し ---
@@ -406,8 +411,8 @@ with tab1:
         num_rows="fixed", 
         key=f"children_editor_v5_{st.session_state.children_version}"
     )
-    # オブジェクト参照を固定するため、インプレースで値を書き換える
-    st.session_state.df_children_state.loc[:, :] = edited_children_df.values
+    # 編集後のデータをアクティブな状態としてセッションに保存（初期データのdf_children_stateは書き換えない）
+    st.session_state.df_children_active = edited_children_df
     
     st.subheader("📝 園独自の特殊ルール（AI自動判定）")
     custom_rule_text = st.text_area(
@@ -748,7 +753,7 @@ with tab3:
         if st.button("⚡ シフトを自動生成する"):
             with st.spinner("AI休み希望と配置要件に基づき、最適なシフトを計算中..."):
                 schedule_result = generate_auto_schedule(
-                    st.session_state.df_children_state, 
+                    st.session_state.df_children_active, 
                     st.session_state.staff_list, 
                     target_year, 
                     target_month, 
@@ -780,7 +785,7 @@ with tab3:
             
             shortages = []
             req_by_slot = {}
-            for idx, row in st.session_state.df_children_state.iterrows():
+            for idx, row in st.session_state.df_children_active.iterrows():
                 req_by_slot[idx] = row["必要保育士数"]
                 
             for d in range(1, num_days + 1):
@@ -1015,7 +1020,7 @@ with tab3:
                 excel_buffer.seek(0)
                 return excel_buffer
 
-            excel_data = generate_styled_excel(st.session_state.df_children_state, df_staff, edited_schedule, target_year, target_month)
+            excel_data = generate_styled_excel(st.session_state.df_children_active, df_staff, edited_schedule, target_year, target_month)
             
             st.download_button(
                 label="📥 完成したシフト管理Excelファイルをダウンロード",
