@@ -357,6 +357,13 @@ def parse_staff_details_with_gemini(api_key, remark_text):
         st.error(f"Gemini APIによる備考解析中にエラーが発生しました: {str(e)}")
         return {"work_hours": remark_text, "off_days": []}
 
+# --- タブ構成 ---
+tab1, tab2, tab3 = st.tabs([
+    "📊 園児数・必要人数計算", 
+    "👥 職員条件設定", 
+    "🗓️ シフト自動生成・Excel出力"
+])
+
 # ==========================================
 # タブ1: 園児数・必要人数計算
 # ==========================================
